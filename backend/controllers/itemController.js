@@ -2,6 +2,18 @@ const Item = require('../models/Item');
 const User = require('../models/User');
 const { validationResult } = require('express-validator');
 
+// Import email service with error handling at the top
+let sendEmail;
+try {
+  sendEmail = require('../services/emailService').sendEmail;
+} catch (error) {
+  console.log('Email service not available:', error.message);
+  sendEmail = async () => {
+    console.log('Email functionality disabled');
+    return true;
+  };
+}
+
 exports.createItem = async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -97,12 +109,11 @@ exports.claimItem = async (req, res) => {
   try {
     const { description } = req.body;
     
-    const item = await Item.findById(req.params.id);
+    const item = await Item.findById(req.params.id).populate('reporter');
     if (!item) {
       return res.status(404).json({ message: 'Item not found' });
     }
 
-    // Check if user already claimed this item
     const existingClaim = item.claims.find(claim => 
       claim.user.toString() === req.user.id
     );
@@ -118,13 +129,26 @@ exports.claimItem = async (req, res) => {
 
     await item.save();
 
-    // Send real-time notification to item reporter
+    // Send email notification to item reporter (with error handling)
+    try {
+      await sendEmail(
+        item.reporter.email,
+        'claimNotification',
+        [item.title, req.user.name, description]
+      );
+    } catch (emailError) {
+      console.log('Email notification failed, but claim was saved:', emailError.message);
+    }
+
+    // Send real-time notification
     const io = req.app.get('io');
-    io.to(item.reporter.toString()).emit('new-claim', {
-      itemId: item._id,
-      itemTitle: item.title,
-      claimerName: req.user.name
-    });
+    if (io) {
+      io.to(item.reporter._id.toString()).emit('new-claim', {
+        itemId: item._id,
+        itemTitle: item.title,
+        claimerName: req.user.name
+      });
+    }
 
     res.json({ message: 'Claim submitted successfully' });
   } catch (error) {
